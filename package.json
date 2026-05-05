@@ -1,0 +1,234 @@
+{
+  "name": "pi-agent",
+  "displayName": "Pi Agent",
+  "description": "Pi Agent: AI coding assistant powered by Pi, integrated into VS Code",
+  "version": "0.1.0",
+  "publisher": "pi-agent",
+  "license": "MIT",
+  "icon": "resources/pi-logo.svg",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "pi",
+    "agent",
+    "ai",
+    "coding",
+    "assistant",
+    "llm"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:piAgentSidebar"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Pi Agent",
+      "properties": {
+        "piAgent.provider": {
+          "type": "string",
+          "default": "anthropic",
+          "enum": [
+            "anthropic",
+            "openai",
+            "openrouter",
+            "gemini",
+            "google",
+            "custom"
+          ],
+          "description": "LLM provider for Pi Agent"
+        },
+        "piAgent.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model identifier. Leave empty to use provider default."
+        },
+        "piAgent.thinkingLevel": {
+          "type": "string",
+          "default": "medium",
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "description": "Reasoning/thinking level for supported models"
+        },
+        "piAgent.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically save files after applying edits"
+        },
+        "piAgent.useCtrlEnterToSend": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use Ctrl/Cmd+Enter to send messages instead of Enter"
+        },
+        "piAgent.preferredLocation": {
+          "type": "string",
+          "default": "sidebar",
+          "enum": [
+            "sidebar",
+            "panel"
+          ],
+          "description": "Default location for Pi Agent panel"
+        },
+        "piAgent.enableNewConversationShortcut": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Ctrl/Cmd+N shortcut for new conversation when Pi is focused"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "pi-agent.open",
+        "title": "Pi Agent: Open in Panel",
+        "icon": {
+          "light": "resources/pi-logo-light.svg",
+          "dark": "resources/pi-logo-dark.svg"
+        }
+      },
+      {
+        "command": "pi-agent.openSidebar",
+        "title": "Pi Agent: Open in Sidebar",
+        "icon": {
+          "light": "resources/pi-logo-light.svg",
+          "dark": "resources/pi-logo-dark.svg"
+        }
+      },
+      {
+        "command": "pi-agent.newConversation",
+        "title": "Pi Agent: New Conversation"
+      },
+      {
+        "command": "pi-agent.focusInput",
+        "title": "Pi Agent: Focus Input"
+      },
+      {
+        "command": "pi-agent.insertAtMention",
+        "title": "Pi Agent: Insert @-Mention Reference"
+      },
+      {
+        "command": "pi-agent.acceptDiff",
+        "title": "Pi Agent: Accept Proposed Changes",
+        "enablement": "pi-agent.viewingProposedDiff",
+        "icon": "$(check)"
+      },
+      {
+        "command": "pi-agent.rejectDiff",
+        "title": "Pi Agent: Reject Proposed Changes",
+        "enablement": "pi-agent.viewingProposedDiff",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "pi-agent.setApiKey",
+        "title": "Pi Agent: Set API Key"
+      },
+      {
+        "command": "pi-agent.showSettings",
+        "title": "Pi Agent: Open Settings"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "pi-agent.open",
+        "key": "ctrl+shift+p",
+        "mac": "cmd+shift+p",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "pi-agent.focusInput",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "pi-agent.focused"
+      },
+      {
+        "command": "pi-agent.newConversation",
+        "key": "ctrl+n",
+        "mac": "cmd+n",
+        "when": "config.piAgent.enableNewConversationShortcut && pi-agent.focused"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pi-agent-sidebar",
+          "title": "Pi Agent",
+          "icon": "resources/pi-logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "pi-agent-sidebar": [
+        {
+          "type": "webview",
+          "id": "piAgentSidebar",
+          "name": "Pi Agent",
+          "icon": "resources/pi-logo.svg"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "pi-agent.open",
+          "when": "!pi-agent.viewingProposedDiff",
+          "group": "navigation"
+        },
+        {
+          "command": "pi-agent.acceptDiff",
+          "when": "pi-agent.viewingProposedDiff",
+          "group": "navigation"
+        },
+        {
+          "command": "pi-agent.rejectDiff",
+          "when": "pi-agent.viewingProposedDiff",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "npm run clean && npm run build:extension && npm run build:webview",
+    "build:extension": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs --target=es2022 --sourcemap --log-override:impossible-typeof=silent --log-override:duplicate-case=silent && node scripts/fix-import-meta.mjs out/extension.js && esbuild out/extension.js --minify --outfile=out/extension.js --allow-overwrite --log-override:impossible-typeof=silent --log-override:duplicate-case=silent",
+    "build:webview": "webpack --mode production --config webpack.webview.config.cjs",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs --target=es2022 --sourcemap --log-override:impossible-typeof=silent --log-override:duplicate-case=silent --watch",
+    "watch:webview": "webpack --mode development --config webpack.webview.config.cjs --watch",
+    "clean": "node scripts/clean.mjs",
+    "lint": "eslint src --ext ts,tsx",
+    "pretest": "npm run build && npm run lint",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/marked": "^5.0.2",
+    "@types/node": "^20.14.15",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.94.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "css-loader": "^7.1.2",
+    "esbuild": "^0.28.0",
+    "eslint": "^8.57.1",
+    "mini-css-extract-plugin": "^2.9.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.6.3",
+    "webpack": "^5.94.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "latest"
+  }
+}
