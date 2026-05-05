@@ -52,7 +52,8 @@ export type WebviewToHostMessage =
   | { type: 'getProviderState' }
   | { type: 'getAuthStatus' }
   | { type: 'insertAtMention'; uri: string }
-  | { type: 'showNotification'; message: string };
+  | { type: 'showNotification'; message: string }
+  | { type: 'openSidebarSettings' };
 
 // ─── Diff Types ───
 
