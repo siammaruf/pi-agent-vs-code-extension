@@ -3,13 +3,12 @@ import { useExtensionHost, useExtensionMessages } from './hooks/useExtensionHost
 import { MessageList } from './components/MessageList';
 import { InputBox, AttachedContext } from './components/InputBox';
 import { StatusBar } from './components/StatusBar';
-import { SettingsPanel } from './components/SettingsPanel';
-import { ModelSelector } from './components/ModelSelector';
 
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'error' | 'thinking';
   content: string;
+  reasoningContent?: string;
   toolName?: string;
   toolArgs?: unknown;
   isStreaming?: boolean;
@@ -26,7 +25,6 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
-  const [model, setModel] = useState<string>('');
   const [providerState, setProviderState] = useState<ProviderState>({
     provider: 'anthropic',
     model: '',
@@ -34,7 +32,6 @@ export default function App() {
     availableModels: [],
   });
   const [hasApiKey, setHasApiKey] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [attachedContext, setAttachedContext] = useState<AttachedContext[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -44,6 +41,23 @@ export default function App() {
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // Helper to extract text/reasoning from SDK assistant messages
+  const extractAssistantContent = useCallback((msg: any): { text: string; reasoning: string } => {
+    let text = '';
+    let reasoning = '';
+    if (msg?.role === 'assistant') {
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === 'text') text += block.text || '';
+          else if (block.type === 'thinking') reasoning += block.thinking || '';
+        }
+      } else if (typeof msg.content === 'string') {
+        text = msg.content;
+      }
+    }
+    return { text, reasoning };
   }, []);
 
   useEffect(() => {
@@ -61,12 +75,52 @@ export default function App() {
       case 'piEvent':
         handlePiEvent(msg.event);
         break;
-      case 'sessionState':
+      case 'sessionState': {
         setIsStreaming(msg.isStreaming);
-        if (msg.model?.name) {
-          setModel(msg.model.name);
+        // Sync messages from session state to recover after reload or missed events
+        if (Array.isArray(msg.messages)) {
+          const synced: ChatMessage[] = msg.messages.map((m: any, idx: number) => {
+            const base: ChatMessage = {
+              id: m.id || `sync-${idx}-${Date.now()}`,
+              role: m.role === 'user' ? 'user' : m.role === 'toolResult' ? 'tool' : 'assistant',
+              content: '',
+              isStreaming: false,
+            };
+            if (m.role === 'user') {
+              if (typeof m.content === 'string') {
+                base.content = m.content;
+              } else if (Array.isArray(m.content)) {
+                base.content = m.content.map((c: any) => c.text || '').join('');
+              }
+            } else if (m.role === 'assistant') {
+              if (Array.isArray(m.content)) {
+                const textParts: string[] = [];
+                const reasoningParts: string[] = [];
+                for (const part of m.content) {
+                  if (part.type === 'text') textParts.push(part.text || '');
+                  else if (part.type === 'thinking') reasoningParts.push(part.thinking || '');
+                }
+                base.content = textParts.join('');
+                base.reasoningContent = reasoningParts.join('');
+              } else if (typeof m.content === 'string') {
+                base.content = m.content;
+              }
+            } else if (m.role === 'toolResult') {
+              base.role = 'tool';
+              base.toolName = m.toolName || '';
+              if (Array.isArray(m.content)) {
+                base.content = m.content.map((c: any) => c.text || '').join('\n');
+              } else if (typeof m.content === 'string') {
+                base.content = m.content;
+              }
+            }
+            return base;
+          }).filter((m: ChatMessage) => m.role !== 'thinking')
+            .filter((m: ChatMessage) => !(m.role === 'assistant' && !m.content?.trim() && !m.reasoningContent?.trim()));
+          setMessages(synced);
         }
         break;
+      }
       case 'newConversation':
         setMessages([]);
         setIsStreaming(false);
@@ -96,22 +150,25 @@ export default function App() {
           thinkingLevel: msg.thinkingLevel || 'medium',
           availableModels: msg.availableModels || [],
         });
-        setModel(msg.model || '');
         break;
       case 'authStatus':
         setHasApiKey(msg.hasApiKey);
+        if (msg.hasApiKey) {
+          postMessage({ type: 'getProviderState' });
+        }
         break;
     }
   });
 
   const handlePiEvent = useCallback((event: any) => {
+    console.log('[PiAgent] Event:', event.type, event);
     switch (event.type) {
       case 'error': {
+        console.error('[PiAgent] Error event:', event.message);
         setIsStreaming(false);
         setIsThinking(false);
         setErrorBanner(event.message || 'An error occurred');
         setMessages((prev) => {
-          // Remove any pending thinking message
           const filtered = prev.filter((m) => m.role !== 'thinking');
           return [...filtered, {
             id: `error-${Date.now()}`,
@@ -122,25 +179,43 @@ export default function App() {
         break;
       }
       case 'agent_start':
+        console.log('[PiAgent] Agent started');
         setIsStreaming(true);
         setIsThinking(false);
         setErrorBanner(null);
+        // Keep thinking messages — they show the loading animation until
+        // message_start fires and replaces them with the assistant message
         break;
       case 'agent_end':
+        console.log('[PiAgent] Agent ended');
         setIsStreaming(false);
         setIsThinking(false);
         currentMessageRef.current = null;
+        setMessages((prev) =>
+          prev
+            .filter((m) => m.role !== 'thinking')
+            .filter((m) => !(m.role === 'assistant' && !m.content?.trim() && !m.reasoningContent?.trim()))
+        );
         break;
       case 'message_start': {
+        const role = event.message?.role;
+        console.log('[PiAgent] Message start, role:', role, 'message:', event.message);
+        // Skip user/tool messages — the webview already adds user messages locally,
+        // and tool results are handled via tool_execution events.
+        if (role === 'user' || role === 'toolResult') {
+          break;
+        }
+        const { text, reasoning } = extractAssistantContent(event.message);
         const newMsg: ChatMessage = {
           id: `msg-${Date.now()}`,
-          role: event.message?.role === 'user' ? 'user' : 'assistant',
-          content: '',
+          role: 'assistant',
+          content: text,
+          reasoningContent: reasoning,
           isStreaming: true,
         };
+        console.log('[PiAgent] Creating assistant msg, initial content:', text, 'reasoning:', reasoning);
         currentMessageRef.current = newMsg;
         setMessages((prev) => {
-          // Remove thinking indicator when real message starts
           const filtered = prev.filter((m) => m.role !== 'thinking');
           return [...filtered, newMsg];
         });
@@ -148,24 +223,71 @@ export default function App() {
       }
       case 'message_update': {
         const delta = event.assistantMessageEvent;
-        if (delta?.type === 'text_delta') {
+        console.log('[PiAgent] Message update, delta type:', delta?.type, 'delta:', delta?.delta);
+
+        let deltaHandled = false;
+
+        // Delta-based incremental update
+        if (delta?.type === 'text_delta' && typeof delta.delta === 'string') {
+          deltaHandled = true;
           setMessages((prev) => {
             const last = prev[prev.length - 1];
-            if (last && last.isStreaming) {
+            if (last && last.isStreaming && last.role === 'assistant') {
               const updated = { ...last, content: last.content + delta.delta };
               currentMessageRef.current = updated;
               return [...prev.slice(0, -1), updated];
             }
             return prev;
           });
+        } else if (delta?.type === 'thinking_delta' && typeof delta.delta === 'string') {
+          deltaHandled = true;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.isStreaming && last.role === 'assistant') {
+              const updated = {
+                ...last,
+                reasoningContent: (last.reasoningContent || '') + delta.delta,
+              };
+              currentMessageRef.current = updated;
+              return [...prev.slice(0, -1), updated];
+            }
+            return prev;
+          });
+        }
+
+        // Fallback: if no recognized delta, parse full message content directly from SDK partial message
+        if (!deltaHandled) {
+          const { text, reasoning } = extractAssistantContent(event.message);
+          if (text || reasoning) {
+            console.log('[PiAgent] Fallback update, text:', text.slice(0, 50), 'reasoning:', reasoning.slice(0, 50));
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.isStreaming && last.role === 'assistant') {
+                const updated = { ...last, content: text, reasoningContent: reasoning };
+                currentMessageRef.current = updated;
+                return [...prev.slice(0, -1), updated];
+              }
+              return prev;
+            });
+          }
         }
         break;
       }
       case 'message_end': {
+        console.log('[PiAgent] Message end, message:', event.message);
+        const { text, reasoning } = extractAssistantContent(event.message);
         setMessages((prev) => {
           const last = prev[prev.length - 1];
-          if (last && last.isStreaming) {
-            const updated = { ...last, isStreaming: false };
+          // Only process if last message is an assistant message that is streaming
+          if (last && last.isStreaming && last.role === 'assistant') {
+            // Remove empty assistant messages (no content, no reasoning)
+            if (!text?.trim() && !reasoning?.trim()) {
+              console.log('[PiAgent] Removing empty assistant message');
+              currentMessageRef.current = null;
+              return prev.slice(0, -1);
+            }
+            const updated = { ...last, content: text, reasoningContent: reasoning, isStreaming: false };
+            console.log('[PiAgent] Finalizing assistant msg, content length:', text.length, 'reasoning length:', reasoning.length);
             currentMessageRef.current = null;
             return [...prev.slice(0, -1), updated];
           }
@@ -174,6 +296,7 @@ export default function App() {
         break;
       }
       case 'tool_execution_start': {
+        console.log('[PiAgent] Tool execution start:', event.toolName);
         const toolMsg: ChatMessage = {
           id: `tool-${Date.now()}`,
           role: 'tool',
@@ -186,6 +309,7 @@ export default function App() {
         break;
       }
       case 'tool_execution_end': {
+        console.log('[PiAgent] Tool execution end');
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last && last.role === 'tool' && last.isStreaming) {
@@ -196,8 +320,10 @@ export default function App() {
         });
         break;
       }
+      default:
+        console.log('[PiAgent] Unhandled event type:', event.type);
     }
-  }, []);
+  }, [extractAssistantContent]);
 
   const handleSend = useCallback(
     (text: string) => {
@@ -226,24 +352,9 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         { id: `user-${Date.now()}`, role: 'user', content: fullText },
+        { id: `thinking-${Date.now()}`, role: 'thinking', content: '' },
       ]);
-      // Show thinking indicator after a short delay if no response yet
       setIsThinking(true);
-      setTimeout(() => {
-        setIsThinking((current) => {
-          if (current) {
-            setMessages((prevMsgs) => {
-              // Only add if no assistant message has started
-              const last = prevMsgs[prevMsgs.length - 1];
-              if (last?.role === 'user') {
-                return [...prevMsgs, { id: `thinking-${Date.now()}`, role: 'thinking', content: '' }];
-              }
-              return prevMsgs;
-            });
-          }
-          return current;
-        });
-      }, 600);
       postMessage({ type: 'sendMessage', text: fullText });
     },
     [postMessage, attachedContext, providerState.model]
@@ -252,27 +363,22 @@ export default function App() {
   const handleAbort = useCallback(() => {
     postMessage({ type: 'abort' });
     setIsThinking(false);
-    setMessages((prev) => prev.filter((m) => m.role !== 'thinking'));
+    setIsStreaming(false);
+    setMessages((prev) => {
+      // Mark any streaming assistant message as stopped and remove thinking
+      return prev
+        .filter((m) => m.role !== 'thinking')
+        .map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
+    });
+    currentMessageRef.current = null;
   }, [postMessage]);
 
   const handleNewConversation = useCallback(() => {
     postMessage({ type: 'newConversation' });
   }, [postMessage]);
 
-  const handleSetApiKey = useCallback((key: string) => {
-    postMessage({ type: 'setApiKey', apiKey: key });
-  }, [postMessage]);
-
-  const handleSetProvider = useCallback((provider: string) => {
-    postMessage({ type: 'setProvider', provider });
-  }, [postMessage]);
-
   const handleSetModel = useCallback((modelId: string) => {
     postMessage({ type: 'setModel', modelId });
-  }, [postMessage]);
-
-  const handleSetThinkingLevel = useCallback((level: string) => {
-    postMessage({ type: 'setThinkingLevel', level });
   }, [postMessage]);
 
   const handleAttachContext = useCallback(() => {
@@ -292,17 +398,11 @@ export default function App() {
       <div className="header">
         <div className="header-left">
           <span className="title">Pi Agent</span>
-          <ModelSelector
-            models={providerState.availableModels}
-            currentModel={providerState.model}
-            provider={providerState.provider}
-            onChange={handleSetModel}
-          />
         </div>
         <div className="header-actions">
           <button
             className="header-btn"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => postMessage({ type: 'openSidebarSettings' })}
             title="Settings"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -334,22 +434,17 @@ export default function App() {
           attachedContext={attachedContext}
           onRemoveContext={handleRemoveContext}
         />
-        <StatusBar model={model} isStreaming={isStreaming} isThinking={isThinking} />
+        <StatusBar
+          model={providerState.model}
+          isStreaming={isStreaming}
+          isThinking={isThinking}
+          models={providerState.availableModels}
+          provider={providerState.provider}
+          onModelChange={handleSetModel}
+        />
       </div>
 
-      <SettingsPanel
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        provider={providerState.provider}
-        model={providerState.model}
-        thinkingLevel={providerState.thinkingLevel}
-        availableModels={providerState.availableModels}
-        hasApiKey={hasApiKey}
-        onSetApiKey={handleSetApiKey}
-        onSetProvider={handleSetProvider}
-        onSetModel={handleSetModel}
-        onSetThinkingLevel={handleSetThinkingLevel}
-      />
+
     </div>
   );
 }

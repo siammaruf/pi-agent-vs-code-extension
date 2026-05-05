@@ -76,6 +76,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider, vscode.Dispo
     this.safePostMessage({ type: "settingsState", ...state });
   }
 
+  switchToTab(tab: string): void {
+    this.safePostMessage({ type: "switchToTab", tab });
+  }
+
   flushQueue(): void {
     if (!this.webview) return;
     while (this.messageQueue.length > 0) {
@@ -1289,6 +1293,10 @@ body {
         }
         if (msg.type === 'settingsState') {
           applySettingsState(msg);
+          return;
+        }
+        if (msg.type === 'switchToTab') {
+          switchTab(msg.tab);
           return;
         }
       } catch(e) {}

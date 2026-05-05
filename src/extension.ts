@@ -281,14 +281,31 @@ async function handleWebviewMessage(message: WebviewToHostMessage): Promise<void
       if (message.apiKey) {
         await configManager.setApiKey(extensionContext, message.apiKey);
         vscode.window.showInformationMessage('API key saved securely.');
+        // Recreate session with new key
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+        await piSessionManager.createSession(cwd);
+        const availableModels = await piSessionManager.getAvailableModels();
         webviewProvider.postMessage({
           type: 'authStatus',
           hasApiKey: true,
           provider: configManager.provider,
         });
-        // Recreate session with new key
-        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-        await piSessionManager.createSession(cwd);
+        webviewProvider.postMessage({
+          type: 'providerState',
+          provider: configManager.provider,
+          model: configManager.model,
+          availableModels,
+          thinkingLevel: configManager.thinkingLevel,
+        });
+        sidebarProvider.updateSettingsState({
+          provider: configManager.provider,
+          model: configManager.model,
+          thinkingLevel: configManager.thinkingLevel,
+          hasApiKey: true,
+          autoSave: configManager.autoSave,
+          useCtrlEnter: configManager.useCtrlEnterToSend,
+          enableShortcut: configManager.enableNewConversationShortcut,
+        });
       }
       break;
     }
@@ -297,12 +314,19 @@ async function handleWebviewMessage(message: WebviewToHostMessage): Promise<void
       configManager.reload();
       const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
       await piSessionManager.createSession(cwd);
+      const availableModels = await piSessionManager.getAvailableModels();
       webviewProvider.postMessage({
         type: 'providerState',
         provider: configManager.provider,
         model: configManager.model,
-        availableModels: await piSessionManager.getAvailableModels(),
+        availableModels,
         thinkingLevel: configManager.thinkingLevel,
+      });
+      sidebarProvider.updateSettingsState({
+        provider: configManager.provider,
+        model: configManager.model,
+        thinkingLevel: configManager.thinkingLevel,
+        hasApiKey: !!(await configManager.getApiKey(extensionContext)),
       });
       break;
     }
@@ -311,24 +335,38 @@ async function handleWebviewMessage(message: WebviewToHostMessage): Promise<void
       configManager.reload();
       const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
       await piSessionManager.createSession(cwd);
+      const availableModels = await piSessionManager.getAvailableModels();
       webviewProvider.postMessage({
         type: 'providerState',
         provider: configManager.provider,
         model: configManager.model,
-        availableModels: await piSessionManager.getAvailableModels(),
+        availableModels,
         thinkingLevel: configManager.thinkingLevel,
+      });
+      sidebarProvider.updateSettingsState({
+        provider: configManager.provider,
+        model: configManager.model,
+        thinkingLevel: configManager.thinkingLevel,
+        hasApiKey: !!(await configManager.getApiKey(extensionContext)),
       });
       break;
     }
     case 'setThinkingLevel': {
       await vscode.workspace.getConfiguration('piAgent').update('thinkingLevel', message.level, true);
       configManager.reload();
+      const availableModels = await piSessionManager.getAvailableModels();
       webviewProvider.postMessage({
         type: 'providerState',
         provider: configManager.provider,
         model: configManager.model,
-        availableModels: await piSessionManager.getAvailableModels(),
+        availableModels,
         thinkingLevel: configManager.thinkingLevel,
+      });
+      sidebarProvider.updateSettingsState({
+        provider: configManager.provider,
+        model: configManager.model,
+        thinkingLevel: configManager.thinkingLevel,
+        hasApiKey: !!(await configManager.getApiKey(extensionContext)),
       });
       break;
     }
@@ -336,6 +374,11 @@ async function handleWebviewMessage(message: WebviewToHostMessage): Promise<void
       if (message.message) {
         vscode.window.showInformationMessage(message.message);
       }
+      break;
+    }
+    case 'openSidebarSettings': {
+      await openSidebar();
+      sidebarProvider.switchToTab('settings');
       break;
     }
     default:
@@ -366,7 +409,15 @@ async function handleSidebarMessage(message: any): Promise<void> {
         configManager.reload();
         const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
         await piSessionManager.createSession(cwd);
+        const availableModels = await piSessionManager.getAvailableModels();
         sidebarProvider.updateSettingsState({ provider: configManager.provider });
+        webviewProvider.postMessage({
+          type: 'providerState',
+          provider: configManager.provider,
+          model: configManager.model,
+          availableModels,
+          thinkingLevel: configManager.thinkingLevel,
+        });
       }
       break;
     }
@@ -376,7 +427,15 @@ async function handleSidebarMessage(message: any): Promise<void> {
         configManager.reload();
         const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
         await piSessionManager.createSession(cwd);
+        const availableModels = await piSessionManager.getAvailableModels();
         sidebarProvider.updateSettingsState({ model: configManager.model });
+        webviewProvider.postMessage({
+          type: 'providerState',
+          provider: configManager.provider,
+          model: configManager.model,
+          availableModels,
+          thinkingLevel: configManager.thinkingLevel,
+        });
       }
       break;
     }
@@ -384,7 +443,15 @@ async function handleSidebarMessage(message: any): Promise<void> {
       if (message.level) {
         await vscode.workspace.getConfiguration('piAgent').update('thinkingLevel', message.level, true);
         configManager.reload();
+        const availableModels = await piSessionManager.getAvailableModels();
         sidebarProvider.updateSettingsState({ thinkingLevel: configManager.thinkingLevel });
+        webviewProvider.postMessage({
+          type: 'providerState',
+          provider: configManager.provider,
+          model: configManager.model,
+          availableModels,
+          thinkingLevel: configManager.thinkingLevel,
+        });
       }
       break;
     }
@@ -392,9 +459,30 @@ async function handleSidebarMessage(message: any): Promise<void> {
       if (message.apiKey) {
         await configManager.setApiKey(extensionContext, message.apiKey);
         vscode.window.showInformationMessage('API key saved securely.');
-        sidebarProvider.updateSettingsState({ hasApiKey: true });
         const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
         await piSessionManager.createSession(cwd);
+        const availableModels = await piSessionManager.getAvailableModels();
+        sidebarProvider.updateSettingsState({
+          provider: configManager.provider,
+          model: configManager.model,
+          thinkingLevel: configManager.thinkingLevel,
+          hasApiKey: true,
+          autoSave: configManager.autoSave,
+          useCtrlEnter: configManager.useCtrlEnterToSend,
+          enableShortcut: configManager.enableNewConversationShortcut,
+        });
+        webviewProvider.postMessage({
+          type: 'authStatus',
+          hasApiKey: true,
+          provider: configManager.provider,
+        });
+        webviewProvider.postMessage({
+          type: 'providerState',
+          provider: configManager.provider,
+          model: configManager.model,
+          availableModels,
+          thinkingLevel: configManager.thinkingLevel,
+        });
       }
       break;
     }
