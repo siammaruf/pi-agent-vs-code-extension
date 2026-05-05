@@ -1,0 +1,26 @@
+# Development files
+src/
+webview/
+out/test/
+.vscode/
+.vscode-test/
+scripts/
+
+# Build tools
+webpack.webview.config.cjs
+tsconfig.json
+tsconfig.webview.json
+.eslintrc.cjs
+
+# Dependencies
+node_modules/
+
+# Source maps (keep for dev, exclude from package)
+out/*.map
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
